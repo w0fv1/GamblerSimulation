@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>赌徒输光定理验证器 - Web Worker 版</title>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+  <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
+  <style>
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .theory {
+      background: #f8f9fa;
+      padding: 20px;
+      border-radius: 8px;
+      margin: 20px 0;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 15px;
+      margin: 20px 0;
+    }
+
+    .chart-container {
+      height: 600px;
+      margin: 20px 0;
+    }
+
+    .results-table {
+      width: 100%;
+      margin: 20px 0;
+      border-collapse: collapse;
+    }
+
+    .results-table th,
+    .results-table td {
+      padding: 12px;
+      border: 1px solid #ddd;
+      text-align: right;
+    }
+
+    .results-table th {
+      background: #f8f9fa;
+    }
+
+    .export-buttons {
+      margin: 10px 0;
+    }
+
+    .logs {
+      max-height: 300px;
+      overflow-y: auto;
+      background: #f8f9fa;
+      border-radius: 8px;
+      padding: 10px;
+    }
+
+    .log-entry {
+      margin: 5px 0;
+      padding: 5px;
+      background: white;
+      border-radius: 4px;
+      font-size: 0.9em;
+    }
+
+    .highlight {
+      color: #c00;
+      font-weight: bold;
+    }
+  </style>
+</head>
+
+<body>
+  <script src="app.js"></script>
+
+  <div class="container" x-data="simulator">
+    <h1>赌徒输光定理验证器</h1>
+
+    <div class="theory">
+      <h3>理论说明</h3>
+      <p>赌徒输光定理指出：在公平博弈（期望收益≤0）中，赌徒最终会输光全部本金的概率为1。本模拟器通过蒙特卡洛方法验证该理论。</p>
+      <p>关键参数说明：</p>
+      <ul>
+        <li><strong>赢时乘数</strong>：获胜时资金的增长倍数（例如2表示翻倍）</li>
+        <li><strong>输时乘数</strong>：失败时资金的保留比例（例如0.5表示损失50%）</li>
+        <li><strong>期望值公式</strong>：EV = (赢概率×赢乘数) + (输概率×输乘数) - 1</li>
+      </ul>
+    </div>
+
+    <form @submit.prevent="start">
+      <div class="form-grid">
+        <label>
+          实验次数: <input type="number" x-model="numExperiments" min="1" max="10000" required>
+          <small>每个本金梯度运行的实验次数</small>
+        </label>
+        <label>
+          胜率 (%): <input type="number" x-model="winRate" min="0" max="100" step="0.1" required>
+          <small>每局获胜概率</small>
+        </label>
+        <label>
+          获胜回报率: <input type="number" x-model="winMultiplier" min="0" max="1" step="0.1" required>
+          <small>获胜时赌注增长倍数</small>
+        </label>
+
+        <label>
+          本金范围:
+          <div class="range-inputs">
+            <input type="number" x-model="lowerLimit" placeholder="最小值" min="0" required>
+            <span>至</span>
+            <input type="number" x-model="upperLimit" placeholder="最大值" min="0" required>
+          </div>
+          <small>对数均匀分布</small>
+        </label>
+        <label>
+          梯度数量: <input type="number" x-model="numBalanceLevels" min="2" max="50" required>
+          <small>测试点数量</small>
+        </label>
+        <label>
+          单次赌注: <input type="number" x-model="betAmount" min="1" required>
+          <small>每次下注金额, 当余额低于该数值时, 视为破产</small>
+        </label>
+
+      </div>
+
+      <div class="form-status">
+        <span x-show="isRunning">运行中... 已完成 <span x-text="progress"></span></span>
+        <button type="submit" :disabled="isRunning">开始模拟</button>
+        <button type="button" @click="abort" :disabled="!isRunning">中止</button>
+      </div>
+    </form>
+
+    <h3>模拟结果可视化</h3>
+    <div class="chart-container" id="main-chart"></div>
+
+    <h3>详细数据
+      <button @click="exportCSV" class="export-buttons">导出CSV</button>
+      <button @click="exportJSON" class="export-buttons">导出JSON</button>
+    </h3>
+    <table class="results-table">
+      <thead>
+        <tr>
+          <th>初始本金</th>
+          <th>平均次数</th>
+          <th>最佳次数</th>
+          <th>最差次数</th>
+        </tr>
+      </thead>
+      <tbody>
+        <template x-for="row in tableData">
+          <tr>
+            <td x-text="row.balance"></td>
+            <td x-text="row.avg"></td>
+            <td x-text="row.best"></td>
+            <td x-text="row.worst"></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+
+    <h3>运行日志</h3>
+    <div class="logs">
+      <template x-for="log in logs">
+        <div class="log-entry" :class="log.type">
+          [<span x-text="log.time"></span>]
+          <span x-html="log.message"></span>
+        </div>
+      </template>
+    </div>
+  </div>
+
+</body>
+
+</html>
